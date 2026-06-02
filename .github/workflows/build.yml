@@ -1,0 +1,74 @@
+name: Build rules
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 0 * * *"
+
+concurrency:
+  group: build-rules
+  cancel-in-progress: false
+
+permissions:
+  actions: write
+  contents: write
+
+jobs:
+  build:
+    name: Build rules
+    runs-on: ubuntu-latest
+    env:
+      TZ: Asia/Shanghai
+    steps:
+      - name: Checkout
+        uses: actions/checkout@main
+
+      - name: Setup Go
+        uses: actions/setup-go@main
+        with:
+          go-version: stable
+          cache: false
+
+      - name: Install v2dat
+        run: go install github.com/urlesistiana/v2dat@latest
+
+      - name: Build rules
+        run: |
+          set -euo pipefail
+
+          geoip_url="https://github.com/Loyalsoldier/geoip/releases/latest/download/geoip-only-cn-private.dat"
+          geosite_url="https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat"
+          workdir="$(mktemp -d)"
+
+          trap 'rm -rf "$workdir"' EXIT
+          mkdir -p rules
+
+          curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 30 "$geoip_url" -o "$workdir/geoip.dat"
+          curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 30 "$geosite_url" -o "$workdir/geosite.dat"
+
+          v2dat unpack geoip -o "$workdir" -f cn "$workdir/geoip.dat"
+          v2dat unpack geosite -o "$workdir" -f cn "$workdir/geosite.dat"
+          v2dat unpack geosite -o "$workdir" -f 'geolocation-!cn' "$workdir/geosite.dat"
+
+          install -m 0644 "$workdir/geoip_cn.txt" rules/geoip_cn.txt
+          install -m 0644 "$workdir/geosite_cn.txt" rules/geosite_cn.txt
+          install -m 0644 "$workdir/geosite_geolocation-!cn.txt" rules/geosite-non-cn.txt
+
+      - name: Commit updates
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add rules/
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "auto: update rules $(date +'%Y-%m-%d %H:%M')"
+            git push
+          fi
+
+      - name: Cleanup Expired Workflows
+        uses: Mattraks/delete-workflow-runs@main
+        with:
+          retain_days: 0
+          keep_minimum_runs: 6
+          delete_workflow_pattern: build.yml
